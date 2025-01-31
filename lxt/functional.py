@@ -453,9 +453,9 @@ class add2_tensors_fn(Function):
     def forward(ctx, input_a, input_b, inplace=False, epsilon=1e-6):
     
         outputs = input_a + input_b
-        if any([inp.requires_grad for inp in (input_a, input_b)]):
-            ctx.save_for_backward(input_a, input_b)
-            ctx.epsilon, ctx.inplace = epsilon, inplace
+        # if any([inp.requires_grad for inp in (input_a, input_b)]):
+        ctx.save_for_backward(input_a, input_b)
+        ctx.epsilon, ctx.inplace = epsilon, inplace
 
         return outputs
 
