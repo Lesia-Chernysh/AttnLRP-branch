@@ -64,7 +64,26 @@ def add2(input_a, input_b, inplace=False, epsilon=1e-8):
     return add2_tensors_fn.apply(input_a, input_b, inplace, epsilon)
 
 @torch.fx.wrap
-def softmax(input, dim, dtype=None, temperature=1.0, inplace=False):
+def sub2(input_a, input_b, inplace=False, epsilon=1e-8):
+    """
+    Standard Epsilon-LRP rule for elementwise subtraction (along all dimensions) of two tensors according to the Equation 8 of the paper
+    'AttnLRP: Attention-Aware Layer-wise Relevance Propagation for Transformers'
+
+    Parameters:
+    -----------
+    input_a: torch.Tensor
+        The first input tensor
+    input_b: torch.Tensor
+        The second input tensor
+    inplace: bool
+        Whether to perform the operation in place during the backward pass, will overwrite the relevance at the output
+    epsilon: float
+        Small value to stabilize the denominator
+    """
+    return add2_tensors_fn.apply(input_a, -input_b, inplace, epsilon)
+
+@torch.fx.wrap
+def softmax(input, dim, dtype=None, _stacklevel=3, temperature=1.0, inplace=False): #fx adds _stacklevel argument - https://github.com/pytorch/pytorch/pull/144451
     """
     Computes Relevance using Deep Taylor Decomposition at x (with bias) according to Proposition 3.1 of the paper
     'AttnLRP: Attention-Aware Layer-wise Relevance Propagation for Transformers'
