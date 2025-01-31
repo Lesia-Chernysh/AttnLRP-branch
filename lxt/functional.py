@@ -19,6 +19,10 @@ def conservation_check_wrap(func):
     def wrapped(ctx, *out_relevance):
 
         inp_relevance = func(ctx, *out_relevance)
+        
+        for i in inp_relevance:
+            if i is not None and torch.isnan(i).any():
+                raise ValueError(f"NaN at {func}")
 
         if CONSERVATION_CHECK_FLAG[0]:
 
