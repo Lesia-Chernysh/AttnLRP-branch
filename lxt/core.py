@@ -1,7 +1,7 @@
 import torch.nn as nn
 from lxt.rules import WrapModule
 from lxt.modules import INIT_MODULE_MAPPING
-from lxt.check import WHITELIST, BLACKLIST, SYMBOLS
+from lxt.check import FN_WHITELIST, MOD_WHITELIST, FN_BLACKLIST, MOD_BLACKLIST, SYMBOLS
 from transformers.utils.fx import HFTracer, get_concrete_args
 from torch.fx import GraphModule
 from warnings import warn
@@ -266,6 +266,9 @@ class Composite:
 
         if l_type not in self.module_summary:
             self.module_summary[(l_name, l_type)] = replaced
+            
+        if not replaced and l_type in MOD_BLACKLIST:
+            warn(f"LRP incompatible module {self._format_type(l_type)} was not replaced!")
     
     
     def _add_to_fn_summary(self, node, replaced: bool):
@@ -287,47 +290,68 @@ class Composite:
         if "nn_module_stack" in node.meta:
             module_name = list(node.meta["nn_module_stack"].values())[-1]
         else:
-            module_name = f"{node.name} (root)"
+            module_name = ("Root Module", node.name)
 
         if module_name not in self.function_summary:
             self.function_summary[module_name] = {}
 
         self.function_summary[module_name][node.target] = replaced
         
+        if not replaced and node.target in FN_BLACKLIST:
+            warn(f"LRP incompatible function {self._format_type(node.target)} was not replaced!")
+        
 
     def print_summary(self):
 
-        headers = ["Parent Module", "Function", "LRP compatible", "Replaced/Wrapped"]
+        headers = ["Parent Module\nType", "Function", "LRP\ncompatible", "Replaced/\nWrapped"]
 
         data = []
-        for module in self.module_summary:
-            if self.module_summary[module]:
-                replaced = SYMBOLS["true"]
-                compatible = "-"
+        for (module_name, module_type), was_replaced in self.module_summary.items():
+            
+            if module_type in MOD_WHITELIST:
+                compatible = SYMBOLS["true"]
+            elif module_type in MOD_BLACKLIST:
+                compatible = SYMBOLS["false"]
             else:
-                replaced = "-"
                 compatible = SYMBOLS["unknown"]
-            data.append([module, "-", compatible, replaced])
+            
+            if was_replaced:
+                replaced = SYMBOLS["true"]
+            else:
+                replaced = SYMBOLS["false"] if module_type not in MOD_WHITELIST else "-" # no need to replace if whitelisted
 
-        for module, functions in self.function_summary.items():
-            for function in functions:
+            data.append([f"{module_name}\n{module_type.__module__}.{module_type.__qualname__}", "-", compatible, replaced])
+
+        for (module_name, module_type), functions in self.function_summary.items():
+            for function, was_replaced in functions.items():
                     
-                if function in WHITELIST:
+                if function in FN_WHITELIST:
                     compatible = SYMBOLS["true"]
-                elif function in BLACKLIST:
+                elif function in FN_BLACKLIST:
                     compatible = SYMBOLS["false"]
                 else:
                     compatible = SYMBOLS["unknown"]
                     
-                if functions[function]:
+                if was_replaced:
                     replaced = SYMBOLS["true"]
                 else:
-                    replaced = SYMBOLS["false"] if function not in WHITELIST else "-" # no need to replace if whitelisted
+                    replaced = SYMBOLS["false"] if function not in FN_WHITELIST else "-" # no need to replace if whitelisted
 
-                data.append([module, function, compatible, replaced])
+                data.append([f"{module_name}\n{self._format_type(module_type)}", self._format_type(function), compatible, replaced])
 
         table = tabulate(data, headers=headers, tablefmt="grid")
         print(table)
+        
+    def _format_type(self, type):
+        segments = []
+        if hasattr(type, '__module__'):
+            segments.append(type.__module__)
+        if hasattr(type, '__qualname__'):
+            segments.append(type.__qualname__)
+        else:
+            segments.append(type)
+                                 
+        return '.'.join(segments)
 
 
     def remove(self):

@@ -20,7 +20,7 @@ SYMBOLS = {
     'unknown': '❔', #'\033[0;33;40m \u2047 \033[0m',
 }
 
-WHITELIST = [
+FN_WHITELIST = [
     "transpose",
     "view",
     "unsqueeze",
@@ -40,7 +40,7 @@ WHITELIST = [
 
 ]
 
-BLACKLIST = [
+FN_BLACKLIST = [
     "sum",
     "add",
     torch.sum,
@@ -52,6 +52,7 @@ BLACKLIST = [
     operator.mul,
 
     operator.floordiv,
+    operator.truediv,
 
     "mean",
     torch.mean,
@@ -63,4 +64,14 @@ BLACKLIST = [
     torch.softmax,
 
     "exp",
+]
+
+MOD_BLACKLIST = [
+    nn.Linear,
+    nn.Conv2d,
+    nn.LayerNorm,
+]
+
+MOD_WHITELIST = [
+    nn.Dropout,
 ]
