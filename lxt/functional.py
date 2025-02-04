@@ -181,6 +181,25 @@ def mul2(input_a, input_b, inplace=False):
     return mul2_fn.apply(input_a, input_b, inplace)
 
 @torch.fx.wrap
+def div2(input_a, input_b, inplace=False):
+    """
+    Uniform LRP rule for elementwise division (along all dimensions) of two tensors according to Proposition 3.2 of the paper
+    'AttnLRP: Attention-Aware Layer-wise Relevance Propagation for Transformers'
+
+    If one of the inputs is a constant or does not require gradients, the relevance is distributed 100% to the other input.
+
+    Parameters:
+    -----------
+    input_a: torch.Tensor
+        The first input tensor
+    input_b: torch.Tensor
+        The second input tensor
+    inplace: bool
+        Whether to perform the operation in place during the backward pass, will overwrite the relevance at the output
+    """
+    return mul2_fn.apply(input_a, 1/input_b, inplace)
+
+@torch.fx.wrap
 def mean(x, dim, keep_dim, epsilon=1e-6):
     """
     Epsilon LRP rule for the mean operation.
