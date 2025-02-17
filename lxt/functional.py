@@ -10,7 +10,6 @@ import torch.nn.functional as F
 CONSERVATION_CHECK_FLAG = [False]
 
 def conservation_check_wrap(func):
-    #TODO: bug in add2_fn
     """
     Decorator to enable or disable the sanity check for LRP operations, i.e. testing if the LRP conservation property holds for all operations excluding bias terms.
     If the sanity check is enabled, the relevance is distributed uniformly to the input tensors, else the relevance is returned as computed by the function.
@@ -444,8 +443,8 @@ class matmul_fn(Function):
         else:
             relevance_norm = out_relevance[0] / _stabilize(outputs * 2, epsilon, inplace)
 
-        relevance_a = torch.matmul(relevance_norm, input_b.transpose(-1, -2)).mul_(input_a)
-        relevance_b = torch.matmul(input_a.transpose(-1, -2), relevance_norm).mul_(input_b)
+        relevance_a = torch.matmul(relevance_norm, input_b.transpose(-1, -2)).mul_(input_a) if input_a.requires_grad else None
+        relevance_b = torch.matmul(input_a.transpose(-1, -2), relevance_norm).mul_(input_b) if input_b.requires_grad else None
         
         return (relevance_a, relevance_b, None, None)
 
@@ -471,18 +470,15 @@ class add2_tensors_fn(Function):
     @staticmethod
     def forward(ctx, input_a, input_b, inplace=False, epsilon=1e-6):
     
-        outputs = input_a + input_b
-        # if any([inp.requires_grad for inp in (input_a, input_b)]):
-        ctx.save_for_backward(input_a, input_b)
-        ctx.epsilon, ctx.inplace = epsilon, inplace
+        if any([isinstance(inp, torch.Tensor) and inp.requires_grad for inp in (input_a, input_b)]):
+            ctx.save_for_backward(input_a, input_b)
+            ctx.epsilon, ctx.inplace = epsilon, inplace
 
-        return outputs
+        return input_a + input_b
 
     @staticmethod
     @conservation_check_wrap
     def backward(ctx, *out_relevance):
-
-        #TODO: replace for conservation check with requires grad stuff
 
         input_a, input_b = ctx.saved_tensors
 
@@ -495,8 +491,8 @@ class add2_tensors_fn(Function):
         else:
             relevance_norm = out_relevance[0] / _stabilize(input_a + input_b, epsilon=ctx.epsilon, inplace=True)
 
-            relevance_a = relevance_norm * input_a
-            relevance_b = relevance_norm * input_b
+            relevance_a = relevance_norm * input_a if input_a.requires_grad else None
+            relevance_b = relevance_norm * input_b if input_b.requires_grad else None
 
         return (relevance_a, relevance_b, None, None)
 
