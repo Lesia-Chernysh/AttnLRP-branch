@@ -83,7 +83,7 @@ class Composite:
         # register an optional zennit composite
         if self.zennit_composite:
             if verbose:
-                print("-> register ZENNIT composite", self.zennit_composite)
+                print("-> registered ZENNIT composite", self.zennit_composite)
             self.zennit_composite.register(parent)
 
         if verbose and (fn_map or dummy_inputs):
@@ -142,6 +142,7 @@ class Composite:
 
                 setattr(parent, name, xai_module)
 
+                #TODO: in case of replaced module child does not refer to original module and self.remove will not revert it
                 # save original module to revert the composite in self.remove()
                 self.original_modules.append((parent, name, child))
 
@@ -358,6 +359,7 @@ class Composite:
         """
         Remove the composite from the model and revert the original modules.
         #TODO: in-depth explanation
+        #TODO: also substitute replaced modules back
         """
 
         warn("This functionality is not yet fully tested. Please check the model after removing the composite.")
