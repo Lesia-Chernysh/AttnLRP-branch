@@ -668,7 +668,7 @@ class layer_norm_grad_fn(Function):
 
         relevance_norm = out_relevance[0] / _stabilize(y, ctx.epsilon, False)
 
-        grads, = torch.autograd.grad(y, x, relevance_norm)
+        grads, = torch.autograd.grad(y, x, relevance_norm, retain_graph=True)
 
         return (grads*x, None, None, None, None)
 
