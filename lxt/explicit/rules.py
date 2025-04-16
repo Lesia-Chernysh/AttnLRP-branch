@@ -215,7 +215,7 @@ class epsilon_lrp_fn(Function):
         relevance_norm = out_relevance[0] / _stabilize(outputs, ctx.epsilon, inplace=False)
 
         # computes vector-jacobian product
-        grads = torch.autograd.grad(outputs, inputs, relevance_norm)
+        grads = torch.autograd.grad(outputs, inputs, relevance_norm, retain_graph=True)
 
         # return relevance at requires_grad indices else None
         relevance = iter([grads[i].mul_(inputs[i]) for i in range(len(inputs))])
@@ -276,7 +276,7 @@ class uniform_epsilon_lrp_fn(epsilon_lrp_fn):
         relevance_norm = relevance_norm / len(inputs)
 
         # computes vector-jacobian product
-        grads = torch.autograd.grad(outputs, inputs, relevance_norm)
+        grads = torch.autograd.grad(outputs, inputs, relevance_norm, retain_graph=True)
 
         # return relevance at requires_grad indices else None
         return (None, None) + tuple(grads[i].mul_(inputs[i]) if ctx.requires_grads[i] else None for i in range(len(ctx.requires_grads)))

@@ -10,7 +10,6 @@ import torch.nn.functional as F
 CONSERVATION_CHECK_FLAG = [False]
 
 def conservation_check_wrap(func):
-    #TODO: bug in add2_fn
     """
     Decorator to enable or disable the sanity check for LRP operations, i.e. testing if the LRP conservation property holds for all operations excluding bias terms.
     If the sanity check is enabled, the relevance is distributed uniformly to the input tensors, else the relevance is returned as computed by the function.
@@ -19,6 +18,10 @@ def conservation_check_wrap(func):
     def wrapped(ctx, *out_relevance):
 
         inp_relevance = func(ctx, *out_relevance)
+        
+        for i in inp_relevance:
+            if i is not None and torch.isnan(i).any():
+                raise ValueError(f"NaN at {func}")
 
         if CONSERVATION_CHECK_FLAG[0]:
 
@@ -60,7 +63,26 @@ def add2(input_a, input_b, inplace=False, epsilon=1e-8):
     return add2_tensors_fn.apply(input_a, input_b, inplace, epsilon)
 
 @torch.fx.wrap
-def softmax(input, dim, dtype=None, temperature=1.0, inplace=False):
+def sub2(input_a, input_b, inplace=False, epsilon=1e-8):
+    """
+    Standard Epsilon-LRP rule for elementwise subtraction (along all dimensions) of two tensors according to the Equation 8 of the paper
+    'AttnLRP: Attention-Aware Layer-wise Relevance Propagation for Transformers'
+
+    Parameters:
+    -----------
+    input_a: torch.Tensor
+        The first input tensor
+    input_b: torch.Tensor
+        The second input tensor
+    inplace: bool
+        Whether to perform the operation in place during the backward pass, will overwrite the relevance at the output
+    epsilon: float
+        Small value to stabilize the denominator
+    """
+    return add2_tensors_fn.apply(input_a, -input_b, inplace, epsilon)
+
+@torch.fx.wrap
+def softmax(input, dim, dtype=None, _stacklevel=3, temperature=1.0, inplace=False): #fx adds _stacklevel argument - https://github.com/pytorch/pytorch/pull/144451
     """
     Computes Relevance using Deep Taylor Decomposition at x (with bias) according to Proposition 3.1 of the paper
     'AttnLRP: Attention-Aware Layer-wise Relevance Propagation for Transformers'
@@ -156,6 +178,25 @@ def mul2(input_a, input_b, inplace=False):
         Whether to perform the operation in place during the backward pass, will overwrite the relevance at the output
     """
     return mul2_fn.apply(input_a, input_b, inplace)
+
+@torch.fx.wrap
+def div2(input_a, input_b, inplace=False):
+    """
+    Uniform LRP rule for elementwise division (along all dimensions) of two tensors according to Proposition 3.2 of the paper
+    'AttnLRP: Attention-Aware Layer-wise Relevance Propagation for Transformers'
+
+    If one of the inputs is a constant or does not require gradients, the relevance is distributed 100% to the other input.
+
+    Parameters:
+    -----------
+    input_a: torch.Tensor
+        The first input tensor
+    input_b: torch.Tensor
+        The second input tensor
+    inplace: bool
+        Whether to perform the operation in place during the backward pass, will overwrite the relevance at the output
+    """
+    return mul2_fn.apply(input_a, 1/input_b, inplace)
 
 @torch.fx.wrap
 def mean(x, dim, keep_dim, epsilon=1e-6):
@@ -268,9 +309,9 @@ def _stabilize(input, epsilon=1e-6, inplace=False):
     Stabilize the input by adding a small value to it
     """
     if inplace:
-        return input.add_(epsilon)
+        return input.add_(input.sign() * epsilon)
     else:
-        return input + epsilon
+        return input + (input.sign() * epsilon)
     
 
 class softmax_fn(Function):
@@ -402,8 +443,8 @@ class matmul_fn(Function):
         else:
             relevance_norm = out_relevance[0] / _stabilize(outputs * 2, epsilon, inplace)
 
-        relevance_a = torch.matmul(relevance_norm, input_b.transpose(-1, -2)).mul_(input_a)
-        relevance_b = torch.matmul(input_a.transpose(-1, -2), relevance_norm).mul_(input_b)
+        relevance_a = torch.matmul(relevance_norm, input_b.transpose(-1, -2)).mul_(input_a) if input_a.requires_grad else None
+        relevance_b = torch.matmul(input_a.transpose(-1, -2), relevance_norm).mul_(input_b) if input_b.requires_grad else None
         
         return (relevance_a, relevance_b, None, None)
 
@@ -429,18 +470,15 @@ class add2_tensors_fn(Function):
     @staticmethod
     def forward(ctx, input_a, input_b, inplace=False, epsilon=1e-6):
     
-        outputs = input_a + input_b
-        if any([inp.requires_grad for inp in (input_a, input_b)]):
+        if any([isinstance(inp, torch.Tensor) and inp.requires_grad for inp in (input_a, input_b)]):
             ctx.save_for_backward(input_a, input_b)
             ctx.epsilon, ctx.inplace = epsilon, inplace
 
-        return outputs
+        return input_a + input_b
 
     @staticmethod
     @conservation_check_wrap
     def backward(ctx, *out_relevance):
-
-        #TODO: replace for conservation check with requires grad stuff
 
         input_a, input_b = ctx.saved_tensors
 
@@ -453,8 +491,8 @@ class add2_tensors_fn(Function):
         else:
             relevance_norm = out_relevance[0] / _stabilize(input_a + input_b, epsilon=ctx.epsilon, inplace=True)
 
-            relevance_a = relevance_norm * input_a
-            relevance_b = relevance_norm * input_b
+            relevance_a = relevance_norm * input_a if input_a.requires_grad else None
+            relevance_b = relevance_norm * input_b if input_b.requires_grad else None
 
         return (relevance_a, relevance_b, None, None)
 
@@ -630,7 +668,7 @@ class layer_norm_grad_fn(Function):
 
         relevance_norm = out_relevance[0] / _stabilize(y, ctx.epsilon, False)
 
-        grads, = torch.autograd.grad(y, x, relevance_norm)
+        grads, = torch.autograd.grad(y, x, relevance_norm, retain_graph=True)
 
         return (grads*x, None, None, None, None)
 
