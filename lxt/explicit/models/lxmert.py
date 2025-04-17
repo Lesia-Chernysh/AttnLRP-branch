@@ -24,9 +24,9 @@ import torch
 from torch import nn
 from torch.nn import CrossEntropyLoss, SmoothL1Loss
 
-from ...activations import ACT2FN, gelu
-from ...modeling_utils import PreTrainedModel
-from ...utils import (
+from transformers.activations import ACT2FN, gelu, GELUActivation
+from transformers.modeling_utils import PreTrainedModel
+from transformers.utils import (
     ModelOutput,
     add_code_sample_docstrings,
     add_start_docstrings,
@@ -34,8 +34,12 @@ from ...utils import (
     logging,
     replace_return_docstrings,
 )
-from .configuration_lxmert import LxmertConfig
+from transformers.models.lxmert.configuration_lxmert import LxmertConfig
 
+import lxt.explicit.modules as lm
+import lxt.explicit.functional as lf
+import lxt.explicit.rules as rules
+from lxt.explicit.core import Composite
 
 logger = logging.get_logger(__name__)
 
@@ -49,6 +53,15 @@ class GeLU(nn.Module):
 
     def forward(self, x):
         return gelu(x)
+
+attnlrp = Composite(
+    {
+        nn.Linear: rules.EpsilonRule,
+        nn.Tanh: rules.IdentityRule,
+        GELUActivation: rules.IdentityRule,
+        GeLU: rules.IdentityRule,
+    }
+)
 
 
 @dataclass
@@ -275,7 +288,7 @@ class LxmertEmbeddings(nn.Module):
 
         # self.LayerNorm is not snake-cased to stick with TensorFlow model variable name and be able to load
         # any TensorFlow checkpoint file
-        self.LayerNorm = nn.LayerNorm(config.hidden_size, eps=1e-12)
+        self.LayerNorm = lm.LayerNormEpsilon(config.hidden_size, eps=1e-12)
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
 
     def forward(self, input_ids, token_type_ids=None, inputs_embeds=None):
@@ -298,7 +311,7 @@ class LxmertEmbeddings(nn.Module):
         position_embeddings = self.position_embeddings(position_ids)
         token_type_embeddings = self.token_type_embeddings(token_type_ids)
 
-        embeddings = inputs_embeds + position_embeddings + token_type_embeddings
+        embeddings = lf.add2(lf.add2(inputs_embeds, position_embeddings), token_type_embeddings)
         embeddings = self.LayerNorm(embeddings)
         embeddings = self.dropout(embeddings)
         return embeddings
@@ -343,20 +356,20 @@ class LxmertAttention(nn.Module):
         value_layer = self.transpose_for_scores(mixed_value_layer)
 
         # Take the dot product between "query" and "key" to get the raw attention scores.
-        attention_scores = torch.matmul(query_layer, key_layer.transpose(-1, -2))
-        attention_scores = attention_scores / math.sqrt(self.attention_head_size)
+        attention_scores = lf.matmul(query_layer, key_layer.transpose(-1, -2))
+        attention_scores = lf.div2(attention_scores, math.sqrt(self.attention_head_size))
         # Apply the attention mask is (precomputed for all layers in BertModel forward() function)
         if attention_mask is not None:
-            attention_scores = attention_scores + attention_mask
+            attention_scores = lf.add2(attention_scores, attention_mask)
 
         # Normalize the attention scores to probabilities.
-        attention_probs = nn.functional.softmax(attention_scores, dim=-1)
+        attention_probs = lf.softmax(attention_scores, dim=-1)
 
         # This is actually dropping out entire tokens to attend to, which might
         # seem a bit unusual, but is taken from the original Transformer paper.
         attention_probs = self.dropout(attention_probs)
 
-        context_layer = torch.matmul(attention_probs, value_layer)
+        context_layer = lf.matmul(attention_probs, value_layer)
         context_layer = context_layer.permute(0, 2, 1, 3).contiguous()
         new_context_layer_shape = context_layer.size()[:-2] + (self.head_size,)
         context_layer = context_layer.view(new_context_layer_shape)
@@ -369,13 +382,13 @@ class LxmertAttentionOutput(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.dense = nn.Linear(config.hidden_size, config.hidden_size)
-        self.LayerNorm = nn.LayerNorm(config.hidden_size, eps=1e-12)
+        self.LayerNorm = lm.LayerNormEpsilon(config.hidden_size, eps=1e-12)
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
 
     def forward(self, hidden_states, input_tensor):
         hidden_states = self.dense(hidden_states)
         hidden_states = self.dropout(hidden_states)
-        hidden_states = self.LayerNorm(hidden_states + input_tensor)
+        hidden_states = self.LayerNorm(lf.add2(hidden_states, input_tensor))
         return hidden_states
 
 
@@ -431,13 +444,13 @@ class LxmertOutput(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.dense = nn.Linear(config.intermediate_size, config.hidden_size)
-        self.LayerNorm = nn.LayerNorm(config.hidden_size, eps=1e-12)
+        self.LayerNorm = lm.LayerNormEpsilon(config.hidden_size, eps=1e-12)
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
 
     def forward(self, hidden_states, input_tensor):
         hidden_states = self.dense(hidden_states)
         hidden_states = self.dropout(hidden_states)
-        hidden_states = self.LayerNorm(hidden_states + input_tensor)
+        hidden_states = self.LayerNorm(lf.add2(hidden_states, input_tensor))
         return hidden_states
 
 
@@ -556,11 +569,11 @@ class LxmertVisualFeatureEncoder(nn.Module):
 
         # Object feature encoding
         self.visn_fc = nn.Linear(feat_dim, config.hidden_size)
-        self.visn_layer_norm = nn.LayerNorm(config.hidden_size, eps=1e-12)
+        self.visn_layer_norm = lm.LayerNormEpsilon(config.hidden_size, eps=1e-12)
 
         # Box position encoding
         self.box_fc = nn.Linear(pos_dim, config.hidden_size)
-        self.box_layer_norm = nn.LayerNorm(config.hidden_size, eps=1e-12)
+        self.box_layer_norm = lm.LayerNormEpsilon(config.hidden_size, eps=1e-12)
 
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
 
@@ -569,7 +582,7 @@ class LxmertVisualFeatureEncoder(nn.Module):
         x = self.visn_layer_norm(x)
         y = self.box_fc(visual_pos)
         y = self.box_layer_norm(y)
-        output = (x + y) / 2
+        output = lf.div2(lf.add2(x, y), 2)
 
         output = self.dropout(output)
         return output
@@ -676,7 +689,7 @@ class LxmertPredictionHeadTransform(nn.Module):
         super(LxmertPredictionHeadTransform, self).__init__()
         self.dense = nn.Linear(config.hidden_size, config.hidden_size)
         self.transform_act_fn = ACT2FN[config.hidden_act]
-        self.LayerNorm = nn.LayerNorm(config.hidden_size, eps=1e-12)
+        self.LayerNorm = lm.LayerNormEpsilon(config.hidden_size, eps=1e-12)
 
     def forward(self, hidden_states):
         hidden_states = self.dense(hidden_states)
@@ -702,7 +715,7 @@ class LxmertLMPredictionHead(nn.Module):
 
     def forward(self, hidden_states):
         hidden_states = self.transform(hidden_states)
-        hidden_states = self.decoder(hidden_states) + self.bias
+        hidden_states = lf.add2(self.decoder(hidden_states), self.bias)
         return hidden_states
 
 
@@ -713,7 +726,7 @@ class LxmertVisualAnswerHead(nn.Module):
         self.logit_fc = nn.Sequential(
             nn.Linear(hid_dim, hid_dim * 2),
             GeLU(),
-            nn.LayerNorm(hid_dim * 2, eps=1e-12),
+            lm.LayerNormEpsilon(hid_dim * 2, eps=1e-12),
             nn.Linear(hid_dim * 2, num_labels),
         )
 
