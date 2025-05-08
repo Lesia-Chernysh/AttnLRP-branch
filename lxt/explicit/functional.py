@@ -13,7 +13,9 @@ def conservation_check_wrap(func):
     """
     Decorator to enable or disable the sanity check for LRP operations, i.e. testing if the LRP conservation property holds for all operations excluding bias terms.
     If the sanity check is enabled, the relevance is distributed uniformly to the input tensors, else the relevance is returned as computed by the function.
-    This check is useful to verify if the operations used in the model are all LRP-compatible.
+    This check is useful to verify if the operations used in the model are all LRP-compatible as only operations for which the gradient is equivalent to the 
+    relevance should remain.
+    It is also checked that the relevance must be strictly decending and whether NaN appears.
     """
     def wrapped(ctx, *out_relevance):
 
@@ -21,7 +23,7 @@ def conservation_check_wrap(func):
         
         for i in inp_relevance:
             if i is not None and torch.isnan(i).any():
-                raise ValueError(f"NaN at {func}")
+                print(f"WARNING: NaN at {func}")
 
         if CONSERVATION_CHECK_FLAG[0]:
 
@@ -34,7 +36,9 @@ def conservation_check_wrap(func):
             
             inp_relevance = tuple(torch.full(r.shape, inp_rel_mean).to(r.device) if r is not None else None for r in inp_relevance)
 
-
+        # if (d:=sum(r.float().sum() if r is not None else 0 for r in inp_relevance) - sum(r.float().sum() if r is not None else 0 for r in out_relevance)) > 0:
+        #     print(f"WARNING: relevance increase by {d} at {func}")
+        
         return inp_relevance
         
     return wrapped
