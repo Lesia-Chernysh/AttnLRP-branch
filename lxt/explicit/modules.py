@@ -52,6 +52,17 @@ class LayerNormEpsilon(nn.LayerNorm):
 
     def forward(self, x):
         return lf.layer_norm(x, self.weight, self.bias, self.eps)
+
+class BatchNorm2dEpsilon(nn.BatchNorm2d):
+
+    def __init__(self, num_features: int, eps: float = 0.00001, momentum: float = 0.1, affine: bool = True, track_running_stats: bool = True, device=None, dtype=None):
+        super().__init__(num_features, eps, momentum, affine, track_running_stats, device, dtype)
+
+    def forward(self, x):
+        # for now only implements inference
+        if self.training:
+            raise NotImplementedError()
+        return lf.batch_norm(x, self.running_mean, self.running_var, self.weight, self.bias, self.eps)
     
 
 ##################################

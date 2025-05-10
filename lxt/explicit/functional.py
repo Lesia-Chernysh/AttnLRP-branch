@@ -280,6 +280,33 @@ def _layer_norm_slower(hidden_states, weight, bias, variance_epsilon):
 
     return y
 
+@torch.fx.wrap
+def batch_norm(hidden_states, running_mean, running_var, weight, bias, variance_epsilon):
+    """
+    A mixture of identity and epsilon rules for standard nn.BatchNorm operations that have mean and var fixed in inference:
+    Identiy rule for element-wise (y * weight) because single input single output. Identity rule on 1/std because of Proposition 3.4 of the paper
+    'AttnLRP: Attention-Aware Layer-wise Relevance Propagation for Transformers'. 
+    (x - mean) is a linear operation, so we apply the epsilon rule on it.
+
+    To implement this, we do a trick: We differentiate the whole layer, while detaching the std operation from the graph.
+    This is then equivalent to all the rules discussed above! This is slightly faster than implementing everything in pure lxt.
+
+    Parameters:
+    -----------
+    hidden_states: torch.Tensor
+        The input tensor
+    weight: torch.Tensor
+        The weight tensor
+    running_mean: torch.Tensor
+        The running mean from training (fixed in inference)
+    running_var: torch.Tensor
+        The running variance from training (fixed in inference)
+    variance_epsilon: float
+        Small value to stabilize the denominator
+    """
+
+    return batch_norm_grad_fn.apply(hidden_states, running_mean, running_var, weight, bias, variance_epsilon)
+
 
 @torch.fx.wrap
 def normalize(input, p= 2.0, dim= 1, eps= 1e-12, out=None):
@@ -681,6 +708,60 @@ class layer_norm_grad_fn(Function):
         grads, = torch.autograd.grad(y, x, relevance_norm, retain_graph=True)
 
         return (grads*x, None, None, None, None)
+
+
+class batch_norm_grad_fn(Function):
+    """
+    A mixture of identity and epsilon rules for standard nn.BatchNorm operations that have mean and var fixed in inference:
+    Identiy rule for element-wise (y * weight) because single input single output. Identity rule on 1/std because of Proposition 3.4 of the paper
+    'AttnLRP: Attention-Aware Layer-wise Relevance Propagation for Transformers'. 
+    (x - mean) is a linear operation, so we apply the epsilon rule on it.
+
+    To implement this, we do a trick: We differentiate the whole layer, while detaching the std operation from the graph.
+    This is then equivalent to all the rules discussed above! This is slightly faster than implementing everything in pure lxt.
+
+    Parameters:
+    -----------
+    hidden_states: torch.Tensor
+        The input tensor
+    weight: torch.Tensor
+        The weight tensor
+    running_mean: torch.Tensor
+        The running mean from training (fixed in inference)
+    running_var: torch.Tensor
+        The running variance from training (fixed in inference)
+    variance_epsilon: float
+        Small value to stabilize the denominator
+    """
+
+    @staticmethod
+    def forward(ctx, x, running_mean, running_var, weight, bias, variance_epsilon, epsilon=1e-6):
+
+        with torch.enable_grad():
+            # we need to broadcast the batch norms to align with the channels using [..., None, None]
+            std = (running_var[..., None, None] + variance_epsilon).sqrt()
+            y = (x - running_mean[..., None, None]) / std.detach() # detach std operation will remove it from computational graph i.e. identity rule on x/std
+            if weight is not None:
+                y *= weight[..., None, None]
+            if bias is not None:
+                y += bias[..., None, None]
+
+            ctx.save_for_backward(x, y)
+            ctx.epsilon = epsilon
+
+        return y.detach()
+
+    @staticmethod
+    @conservation_check_wrap
+    def backward(ctx, *out_relevance):
+
+        x, y = ctx.saved_tensors
+
+        relevance_norm = out_relevance[0] / _stabilize(y, ctx.epsilon, False)
+
+        grads, = torch.autograd.grad(y, x, relevance_norm, retain_graph=True)
+
+        return (grads*x, None, None, None, None, None)
 
 
 class normalize_identity_fn(Function):
