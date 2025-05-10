@@ -26,12 +26,13 @@ import numpy as np
 import torch
 from torch import nn
 from torch.nn import functional as F
-from torch.nn.modules.batchnorm import BatchNorm2d
 from torchvision.ops import RoIPool
 from torchvision.ops.boxes import batched_nms, nms
 
 from utils import WEIGHTS_NAME, Config, cached_path, hf_bucket_url, is_remote_url, load_checkpoint
 
+import lxt.explicit.modules as lm
+import lxt.explicit.functional as lf
 
 # other:
 def norm_box(boxes, raw_sizes):
@@ -39,8 +40,8 @@ def norm_box(boxes, raw_sizes):
         normalized_boxes = boxes.copy()
     else:
         normalized_boxes = boxes.clone()
-    normalized_boxes[:, :, (0, 2)] /= raw_sizes[:, 1]
-    normalized_boxes[:, :, (1, 3)] /= raw_sizes[:, 0]
+    normalized_boxes[:, :, (0, 2)] = lf.div2(normalized_boxes[:, :, (0, 2)], raw_sizes[:, 1])
+    normalized_boxes[:, :, (1, 3)] = lf.div2(normalized_boxes[:, :, (1, 3)], raw_sizes[:, 0])
     return normalized_boxes
 
 
@@ -125,7 +126,7 @@ def do_nms(boxes, scores, image_shape, score_thresh, nms_thresh, mind, maxd):
     max_scores, max_classes = scores.max(1)  # R x C --> R
     num_objs = boxes.size(0)
     boxes = boxes.view(-1, 4)
-    idxs = torch.arange(num_objs).to(boxes.device) * num_bbox_reg_classes + max_classes
+    idxs = lf.mul2(torch.arange(num_objs).to(boxes.device), num_bbox_reg_classes) + max_classes
     max_boxes = boxes[idxs]  # Select max boxes according to the max scores.
 
     # Apply NMS
@@ -153,8 +154,8 @@ def _clip_box(tensor, box_size: Tuple[int, int]):
 
 
 def _nonempty_boxes(box, threshold: float = 0.0) -> torch.Tensor:
-    widths = box[:, 2] - box[:, 0]
-    heights = box[:, 3] - box[:, 1]
+    widths = lf.sub2(box[:, 2], box[:, 0])
+    heights = lf.sub2(box[:, 3], box[:, 1])
     keep = (widths > threshold) & (heights > threshold)
     return keep
 
@@ -164,7 +165,7 @@ def get_norm(norm, out_channels):
         if len(norm) == 0:
             return None
         norm = {
-            "BN": BatchNorm2d,
+            "BN": lm.BatchNorm2dEpsilon,
             "GN": lambda channels: nn.GroupNorm(32, channels),
             "nnSyncBN": nn.SyncBatchNorm,  # keep for debugging
             "": lambda x: x,
@@ -245,8 +246,8 @@ def build_backbone(cfg):
         stage_kargs["block_class"] = BottleneckBlock
         blocks = ResNet.make_stage(**stage_kargs)
         in_channels = out_channels
-        out_channels *= 2
-        bottleneck_channels *= 2
+        out_channels = out_channels * 2
+        bottleneck_channels = bottleneck_channels * 2
 
         if freeze_at >= stage_idx:
             for block in blocks:
@@ -397,11 +398,11 @@ def assign_boxes_to_levels(
 
     box_sizes = torch.sqrt(torch.cat([boxes.area() for boxes in box_lists]))
     # Eqn.(1) in FPN paper
-    level_assignments = torch.floor(canonical_level + torch.log2(box_sizes / canonical_box_size + 1e-8))
+    level_assignments = torch.floor(lf.add2(canonical_level, torch.log2(lf.div2(box_sizes, canonical_box_size) + 1e-8)))
     # clamp level to (min, max), in case the box size is too large or too small
     # for the available feature maps
     level_assignments = torch.clamp(level_assignments, min=min_level, max=max_level)
-    return level_assignments.to(torch.int64) - min_level
+    return lf.sub2(level_assignments.to(torch.int64), min_level)
 
 
 # Helper Classes
@@ -465,21 +466,21 @@ class Box2BoxTransform(object):
         assert isinstance(src_boxes, torch.Tensor), type(src_boxes)
         assert isinstance(target_boxes, torch.Tensor), type(target_boxes)
 
-        src_widths = src_boxes[:, 2] - src_boxes[:, 0]
-        src_heights = src_boxes[:, 3] - src_boxes[:, 1]
-        src_ctr_x = src_boxes[:, 0] + 0.5 * src_widths
-        src_ctr_y = src_boxes[:, 1] + 0.5 * src_heights
+        src_widths = lf.sub2(src_boxes[:, 2], src_boxes[:, 0])
+        src_heights = lf.sub2(src_boxes[:, 3], src_boxes[:, 1])
+        src_ctr_x = lf.add2(src_boxes[:, 0], lf.mul2(0.5, src_widths))
+        src_ctr_y = lf.add2(src_boxes[:, 1], lf.mul2(0.5, src_heights))
 
-        target_widths = target_boxes[:, 2] - target_boxes[:, 0]
-        target_heights = target_boxes[:, 3] - target_boxes[:, 1]
-        target_ctr_x = target_boxes[:, 0] + 0.5 * target_widths
-        target_ctr_y = target_boxes[:, 1] + 0.5 * target_heights
+        target_widths = lf.sub2(target_boxes[:, 2], target_boxes[:, 0])
+        target_heights = lf.sub2(target_boxes[:, 3], target_boxes[:, 1])
+        target_ctr_x = lf.add2(target_boxes[:, 0], lf.mul2(0.5, target_widths))
+        target_ctr_y = lf.add2(target_boxes[:, 1], lf.mul2(0.5, target_heights))
 
         wx, wy, ww, wh = self.weights
-        dx = wx * (target_ctr_x - src_ctr_x) / src_widths
-        dy = wy * (target_ctr_y - src_ctr_y) / src_heights
-        dw = ww * torch.log(target_widths / src_widths)
-        dh = wh * torch.log(target_heights / src_heights)
+        dx = lf.mul2(wx, lf.div2(lf.sub2(target_ctr_x, src_ctr_x), src_widths))
+        dy = lf.mul2(wy, lf.div2(lf.sub2(target_ctr_y, src_ctr_y), src_heights))
+        dw = lf.mul2(ww, torch.log(lf.div2(target_widths, src_widths)))
+        dh = lf.mul2(wh, torch.log(lf.div2(target_heights, src_heights)))
 
         deltas = torch.stack((dx, dy, dw, dh), dim=1)
         assert (src_widths > 0).all().item(), "Input boxes to Box2BoxTransform are not valid!"
@@ -496,31 +497,31 @@ class Box2BoxTransform(object):
         """
         boxes = boxes.to(deltas.dtype)
 
-        widths = boxes[:, 2] - boxes[:, 0]
-        heights = boxes[:, 3] - boxes[:, 1]
-        ctr_x = boxes[:, 0] + 0.5 * widths
-        ctr_y = boxes[:, 1] + 0.5 * heights
+        widths = lf.sub2(boxes[:, 2], boxes[:, 0])
+        heights = lf.sub2(boxes[:, 3], boxes[:, 1])
+        ctr_x = lf.add2(boxes[:, 0], lf.mul2(0.5, widths))
+        ctr_y = lf.add2(boxes[:, 1], lf.mul2(0.5, heights))
 
         wx, wy, ww, wh = self.weights
-        dx = deltas[:, 0::4] / wx
-        dy = deltas[:, 1::4] / wy
-        dw = deltas[:, 2::4] / ww
-        dh = deltas[:, 3::4] / wh
+        dx = lf.div2(deltas[:, 0::4], wx)
+        dy = lf.div2(deltas[:, 1::4], wy)
+        dw = lf.div2(deltas[:, 2::4], ww)
+        dh = lf.div2(deltas[:, 3::4], wh)
 
         # Prevent sending too large values into torch.exp()
         dw = torch.clamp(dw, max=self.scale_clamp)
         dh = torch.clamp(dh, max=self.scale_clamp)
 
-        pred_ctr_x = dx * widths[:, None] + ctr_x[:, None]
-        pred_ctr_y = dy * heights[:, None] + ctr_y[:, None]
-        pred_w = torch.exp(dw) * widths[:, None]
-        pred_h = torch.exp(dh) * heights[:, None]
+        pred_ctr_x = lf.add2(lf.mul2(dx, widths[:, None]), ctr_x[:, None])
+        pred_ctr_y = lf.add2(lf.mul2(dy, heights[:, None]), ctr_y[:, None])
+        pred_w = lf.mul2(torch.exp(dw), widths[:, None])
+        pred_h = lf.mul2(torch.exp(dh), heights[:, None])
 
         pred_boxes = torch.zeros_like(deltas)
-        pred_boxes[:, 0::4] = pred_ctr_x - 0.5 * pred_w  # x1
-        pred_boxes[:, 1::4] = pred_ctr_y - 0.5 * pred_h  # y1
-        pred_boxes[:, 2::4] = pred_ctr_x + 0.5 * pred_w  # x2
-        pred_boxes[:, 3::4] = pred_ctr_y + 0.5 * pred_h  # y2
+        pred_boxes[:, 0::4] = lf.sub2(pred_ctr_x, lf.mul2(0.5, pred_w))  # x1
+        pred_boxes[:, 1::4] = lf.sub2(pred_ctr_y, lf.mul2(0.5, pred_h))  # y1
+        pred_boxes[:, 2::4] = lf.add2(pred_ctr_x, lf.mul2(0.5, pred_w))  # x2
+        pred_boxes[:, 3::4] = lf.add2(pred_ctr_y, lf.mul2(0.5, pred_h))  # y2
         return pred_boxes
 
 
@@ -769,10 +770,11 @@ class LastLevelP6P7(nn.Module):
         self.in_feature = "res5"
         self.p6 = nn.Conv2d(in_channels, out_channels, 3, 2, 1)
         self.p7 = nn.Conv2d(out_channels, out_channels, 3, 2, 1)
+        self.relu = nn.ReLU()
 
     def forward(self, c5):
         p6 = self.p6(c5)
-        p7 = self.p7(F.relu(p6))
+        p7 = self.p7(self.relu(p6))
         return [p6, p7]
 
 
@@ -790,10 +792,11 @@ class BasicStem(nn.Module):
         )
         self.caffe_maxpool = caffe_maxpool
         # use pad 1 instead of pad zero
+        self.relu = nn.ReLU()
 
     def forward(self, x):
         x = self.conv1(x)
-        x = F.relu_(x)
+        x = self.relu(x)
         if self.caffe_maxpool:
             x = F.max_pool2d(x, kernel_size=3, stride=2, padding=0, ceil_mode=True)
         else:
@@ -867,7 +870,7 @@ class BottleneckBlock(ResNetBlockBase):
             bottleneck_channels,
             kernel_size=3,
             stride=stride_3x3,
-            padding=1 * dilation,
+            padding=dilation,
             bias=False,
             groups=num_groups,
             dilation=dilation,
@@ -882,12 +885,14 @@ class BottleneckBlock(ResNetBlockBase):
             norm=get_norm(norm, out_channels),
         )
 
+        self.relu = nn.ReLU()
+
     def forward(self, x):
         out = self.conv1(x)
-        out = F.relu_(out)
+        out = self.relu(out)
 
         out = self.conv2(out)
-        out = F.relu_(out)
+        out = self.relu(out)
 
         out = self.conv3(out)
 
@@ -896,8 +901,8 @@ class BottleneckBlock(ResNetBlockBase):
         else:
             shortcut = x
 
-        out += shortcut
-        out = F.relu_(out)
+        out = lf.add2(out, shortcut)
+        out = self.relu(out)
         return out
 
 
@@ -1209,8 +1214,8 @@ class ROIOutputs(object):
 
             if scales is not None:
                 scale_yx = scales[i]
-                max_boxes[:, 0::2] *= scale_yx[1]
-                max_boxes[:, 1::2] *= scale_yx[0]
+                max_boxes[:, 0::2] = lf.mul2(max_boxes[:, 0::2], scale_yx[1])
+                max_boxes[:, 1::2] = lf.mul2(max_boxes[:, 1::2], scale_yx[0])
 
             final_results.append(
                 (
@@ -1347,7 +1352,7 @@ class Res5ROIHeads(nn.Module):
 
         #assert not proposal_boxes[0].requires_grad
         box_features = self._shared_roi_transform(features, proposal_boxes)
-        feature_pooled = box_features.mean(dim=[2, 3])  # pooled to 1x1
+        feature_pooled = lf.mean(box_features, dim=[2, 3])  # pooled to 1x1
         obj_logits, attr_logits, pred_proposal_deltas = self.box_predictor(feature_pooled)
         return obj_logits, attr_logits, pred_proposal_deltas, feature_pooled
 
@@ -1381,9 +1386,9 @@ class AnchorGenerator(nn.Module):
         # If one size (or aspect ratio) is specified and there are multiple feature
         # maps, then we "broadcast" anchors of that single size (or aspect ratio)
         if len(sizes) == 1:
-            sizes *= self.num_features
+            sizes = sizes * self.num_features
         if len(aspect_ratios) == 1:
-            aspect_ratios *= self.num_features
+            aspect_ratios = aspect_ratios * self.num_features
         assert self.num_features == len(sizes)
         assert self.num_features == len(aspect_ratios)
 
@@ -1409,7 +1414,7 @@ class AnchorGenerator(nn.Module):
             shift_x, shift_y = _create_grid_offsets(size, stride, self.offset, base_anchors.device)
             shifts = torch.stack((shift_x, shift_y, shift_x, shift_y), dim=1)
 
-            anchors.append((shifts.view(-1, 1, 4) + base_anchors.view(1, -1, 4)).reshape(-1, 4))
+            anchors.append(lf.add2(shifts.view(-1, 1, 4), base_anchors.view(1, -1, 4)).reshape(-1, 4))
 
         return anchors
 
@@ -1643,6 +1648,8 @@ class FastRCNNOutputLayers(nn.Module):
         for item in [self.cls_score, self.bbox_pred]:
             nn.init.constant_(item.bias, 0)
 
+        self.relu = nn.ReLU()
+
     def forward(self, roi_features):
         if roi_features.dim() > 2:
             roi_features = torch.flatten(roi_features, start_dim=1)
@@ -1653,7 +1660,7 @@ class FastRCNNOutputLayers(nn.Module):
             cls_emb = self.cls_embedding(max_class)  # [b] --> [b, 256]
             roi_features = torch.cat([roi_features, cls_emb], -1)  # [b, 2048] + [b, 256] --> [b, 2304]
             roi_features = self.fc_attr(roi_features)
-            roi_features = F.relu(roi_features)
+            roi_features = self.relu(roi_features)
             attr_scores = self.attr_score(roi_features)
             return scores, attr_scores, proposal_deltas
         else:
@@ -1869,7 +1876,7 @@ class GeneralizedRCNN(nn.Module):
         **kwargs,
     ):
         # run images through bacbone
-        original_sizes = image_shapes * scales_yx
+        original_sizes = lf.mul2(image_shapes, scales_yx)
         features = self.backbone(images)
 
         # generate proposals if none are available
@@ -1880,7 +1887,7 @@ class GeneralizedRCNN(nn.Module):
 
         # pool object features from either gt_boxes, or from proposals
         obj_logits, attr_logits, box_deltas, feature_pooled = self.roi_heads(features, proposal_boxes, gt_boxes)
-
+        
         # prepare FRCNN Outputs and select top proposals
         boxes, classes, class_probs, attrs, attr_probs, roi_features = self.roi_outputs(
             obj_logits=obj_logits,
