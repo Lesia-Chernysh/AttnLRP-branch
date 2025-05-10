@@ -312,10 +312,12 @@ def _stabilize(input, epsilon=1e-6, inplace=False):
     """
     Stabilize the input by adding a small value to it
     """
+    sign = input.sign()
+    sign[sign==0] = 1
     if inplace:
-        return input.add_(input.sign() * epsilon)
+        return input.add_(sign * epsilon)
     else:
-        return input + (input.sign() * epsilon)
+        return input + (sign * epsilon)
     
 
 class softmax_fn(Function):
