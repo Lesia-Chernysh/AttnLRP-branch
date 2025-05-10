@@ -203,7 +203,7 @@ def div2(input_a, input_b, inplace=False):
     return mul2_fn.apply(input_a, 1/input_b, inplace)
 
 @torch.fx.wrap
-def mean(x, dim, keep_dim, epsilon=1e-6):
+def mean(x, dim, keepdim=False, epsilon=1e-6):
     """
     Epsilon LRP rule for the mean operation.
 
@@ -213,13 +213,13 @@ def mean(x, dim, keep_dim, epsilon=1e-6):
         The input tensor
     dim: int
         The dimension to apply the mean function
-    keep_dim: bool
+    keepdim: bool
         Whether to keep the dimension after applying the mean function
     epsilon: float
         Small value to stabilize the denominator
     """
     
-    return mean_fn.apply(x, dim, keep_dim, epsilon)
+    return mean_fn.apply(x, dim, keepdim, epsilon)
 
 @torch.fx.wrap
 def layer_norm(hidden_states, weight, bias, variance_epsilon):
@@ -266,7 +266,7 @@ def _layer_norm_slower(hidden_states, weight, bias, variance_epsilon):
     """
 
     
-    x_mean = mean(hidden_states, -1, keep_dim=True)
+    x_mean = mean(hidden_states, -1, keepdim=True)
 
     # no relevance will flow through std because we detach!
     var = ((hidden_states - x_mean) ** 2).mean(dim=-1, keepdim=True)
@@ -590,7 +590,7 @@ class mean_fn(Function):
         The input tensor
     dim: int
         The dimension to apply the mean function
-    keep_dim: bool
+    keepdim: bool
         Whether to keep the dimension after applying the mean function
     epsilon: float
         Small value to stabilize the denominator
@@ -614,15 +614,19 @@ class mean_fn(Function):
 
         x_sum = x.sum(ctx.dim, keepdim=True)
 
+        out_relevance = out_relevance[0]
+        
         if ctx.keepdim is False:
-            out_relevance = out_relevance[0].unsqueeze(ctx.dim)
-        else:
-            out_relevance = out_relevance[0]
+            if type(ctx.dim) is tuple or type(ctx.dim) is list:
+                for dim in ctx.dim:
+                    out_relevance = out_relevance.unsqueeze(dim)
+            else:
+                out_relevance = out_relevance.unsqueeze(ctx.dim)
 
         relevance = x * out_relevance / _stabilize(x_sum, ctx.epsilon, inplace=True)
 
-        if ctx.keepdim is False:
-            relevance = relevance.squeeze(ctx.dim)
+        #if ctx.keepdim is False:
+        #    relevance = relevance.squeeze(ctx.dim)
 
         return (relevance, None, None, None)
     
