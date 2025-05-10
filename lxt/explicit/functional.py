@@ -516,13 +516,13 @@ class add2_tensors_fn(Function):
         input_a, input_b = ctx.saved_tensors
 
         if ctx.inplace:
-            relevance_norm = out_relevance[0].div_(_stabilize(input_a + input_b, epsilon=ctx.epsilon, inplace=True))
+            relevance_norm = out_relevance[0].div_(_stabilize(input_a + input_b, epsilon=ctx.epsilon, inplace=ctx.inplace))
 
             relevance_a = relevance_norm * input_a
             relevance_b = relevance_norm.mul_(input_b)
 
         else:
-            relevance_norm = out_relevance[0] / _stabilize(input_a + input_b, epsilon=ctx.epsilon, inplace=True)
+            relevance_norm = out_relevance[0] / _stabilize(input_a + input_b, epsilon=ctx.epsilon, inplace=ctx.inplace)
 
             relevance_a = relevance_norm * input_a if input_a.requires_grad else None
             relevance_b = relevance_norm * input_b if input_b.requires_grad else None
