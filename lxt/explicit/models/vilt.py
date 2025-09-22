@@ -24,9 +24,9 @@ import torch.utils.checkpoint
 from torch import nn
 from torch.nn import CrossEntropyLoss
 
-from ...activations import ACT2FN
-from ...modeling_layers import GradientCheckpointingLayer
-from ...modeling_outputs import (
+from transformers.activations import ACT2FN
+from transformers.modeling_layers import GradientCheckpointingLayer
+from transformers.modeling_outputs import (
     BaseModelOutput,
     BaseModelOutputWithPooling,
     MaskedLMOutput,
@@ -34,11 +34,41 @@ from ...modeling_outputs import (
     SequenceClassifierOutput,
     TokenClassifierOutput,
 )
-from ...modeling_utils import PreTrainedModel
-from ...pytorch_utils import find_pruneable_heads_and_indices, meshgrid, prune_linear_layer
-from ...utils import auto_docstring, logging
-from .configuration_vilt import ViltConfig
+from transformers.modeling_utils import PreTrainedModel
+from transformers.pytorch_utils import find_pruneable_heads_and_indices, meshgrid, prune_linear_layer
+from transformers.utils import auto_docstring, logging
+from transformers.models.vilt.configuration_vilt import ViltConfig
 
+################# LXT
+import lxt.explicit.modules as lm
+import lxt.explicit.functional as lf
+import lxt.explicit.rules as rules
+from lxt.explicit.core import Composite
+from zennit.composites import LayerMapComposite
+import zennit.rules as z_rules
+
+from transformers.activations import gelu, GELUActivation
+
+class GeLU(nn.Module):
+    def __init__(self):
+        super().__init__()
+
+    def forward(self, x):
+        return gelu(x)
+
+attnlrp = Composite(
+    {
+        #nn.Linear: rules.EpsilonRule,
+        nn.Tanh: rules.IdentityRule,
+        GELUActivation: rules.IdentityRule,
+        GeLU: rules.IdentityRule,
+    },
+    zennit_composite=LayerMapComposite([
+        (nn.Conv2d, z_rules.Gamma(100)),
+        (nn.Linear, z_rules.Gamma(0.05)),
+    ])
+)
+################## LXT end
 
 logger = logging.get_logger(__name__)
 
@@ -172,7 +202,7 @@ class ViltEmbeddings(nn.Module):
         pos_embed = torch.cat(
             (self.position_embeddings[:, 0, :][:, None, :].expand(batch_size, -1, -1), pos_embed), dim=1
         )
-        x = x + pos_embed
+        x = lf.add2(x, pos_embed) # <----------- LXT
         x = self.dropout(x)
 
         x_mask = torch.cat([torch.ones(x_mask.shape[0], 1).to(x_mask), x_mask], dim=1)
@@ -207,12 +237,12 @@ class ViltEmbeddings(nn.Module):
         # 0 indicates text, 1 indicates image, 2 is optionally used when a second image is provided (NLVR2)
         if image_token_type_idx is None:
             image_token_type_idx = 1
-        text_embeds = text_embeds + self.token_type_embeddings(
+        text_embeds = lf.add2(text_embeds, self.token_type_embeddings( # <----------- LXT
             torch.zeros_like(attention_mask, dtype=torch.long, device=text_embeds.device)
-        )
-        image_embeds = image_embeds + self.token_type_embeddings(
+        ))
+        image_embeds = lf.add2(image_embeds, self.token_type_embeddings( # <----------- LXT
             torch.full_like(image_masks, image_token_type_idx, dtype=torch.long, device=text_embeds.device)
-        )
+        ))
 
         # PART 4: concatenate
         embeddings = torch.cat([text_embeds, image_embeds], dim=1)
@@ -232,7 +262,7 @@ class TextEmbeddings(nn.Module):
 
         # self.LayerNorm is not snake-cased to stick with TensorFlow model variable name and be able to load
         # any TensorFlow checkpoint file
-        self.LayerNorm = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
+        self.LayerNorm = lm.LayerNormEpsilon(config.hidden_size, eps=config.layer_norm_eps) # <----------- LXT
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
         # position_ids (1, len position emb) is contiguous in memory and exported when serialized
         self.position_embedding_type = getattr(config, "position_embedding_type", "absolute")
@@ -269,10 +299,10 @@ class TextEmbeddings(nn.Module):
             inputs_embeds = self.word_embeddings(input_ids)
         token_type_embeddings = self.token_type_embeddings(token_type_ids)
 
-        embeddings = inputs_embeds + token_type_embeddings
+        embeddings = lf.add2(inputs_embeds, token_type_embeddings) # <----------- LXT
         if self.position_embedding_type == "absolute":
             position_embeddings = self.position_embeddings(position_ids)
-            embeddings += position_embeddings
+            embeddings = lf.add2(embeddings, position_embeddings) # <----------- LXT
         embeddings = self.LayerNorm(embeddings)
         embeddings = self.dropout(embeddings)
         return embeddings
@@ -347,14 +377,14 @@ class ViltSelfAttention(nn.Module):
         )
 
         # Take the dot product between "query" and "key" to get the raw attention scores.
-        attention_scores = torch.matmul(query_layer, key_layer.transpose(-1, -2))
-        attention_scores = attention_scores / math.sqrt(self.attention_head_size)
+        attention_scores = lf.matmul(query_layer, key_layer.transpose(-1, -2)) # <----------- LXT
+        attention_scores = lf.div2(attention_scores, math.sqrt(self.attention_head_size)) # <----------- LXT
         if attention_mask is not None:
             # Apply the attention mask is (precomputed for all layers in BertModel forward() function)
-            attention_scores = attention_scores + attention_mask
+            attention_scores = lf.add2(attention_scores, attention_mask) # <----------- LXT
 
         # Normalize the attention scores to probabilities.
-        attention_probs = nn.Softmax(dim=-1)(attention_scores)
+        attention_probs = lf.softmax(attention_scores, dim=-1) # <----------- LXT
 
         # This is actually dropping out entire tokens to attend to, which might
         # seem a bit unusual, but is taken from the original Transformer paper.
@@ -364,7 +394,7 @@ class ViltSelfAttention(nn.Module):
         if head_mask is not None:
             attention_probs = attention_probs * head_mask
 
-        context_layer = torch.matmul(attention_probs, value_layer)
+        context_layer = lf.matmul(attention_probs, value_layer) # <----------- LXT
 
         context_layer = context_layer.permute(0, 2, 1, 3).contiguous()
         new_context_layer_shape = context_layer.size()[:-2] + (self.all_head_size,)
@@ -453,7 +483,7 @@ class ViltOutput(nn.Module):
     def forward(self, hidden_states: torch.Tensor, input_tensor: torch.Tensor) -> torch.Tensor:
         hidden_states = self.dense(hidden_states)
         hidden_states = self.dropout(hidden_states)
-        hidden_states = hidden_states + input_tensor
+        hidden_states = lf.add2(hidden_states, input_tensor) # <----------- LXT
         return hidden_states
 
 
@@ -467,8 +497,8 @@ class ViltLayer(GradientCheckpointingLayer):
         self.attention = ViltAttention(config)
         self.intermediate = ViltIntermediate(config)
         self.output = ViltOutput(config)
-        self.layernorm_before = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
-        self.layernorm_after = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
+        self.layernorm_before = lm.LayerNormEpsilon(config.hidden_size, eps=config.layer_norm_eps) # <----------- LXT
+        self.layernorm_after = lm.LayerNormEpsilon(config.hidden_size, eps=config.layer_norm_eps) # <----------- LXT
 
     def forward(self, hidden_states, attention_mask=None, head_mask=None, output_attentions=False):
         self_attention_outputs = self.attention(
@@ -481,7 +511,7 @@ class ViltLayer(GradientCheckpointingLayer):
         outputs = self_attention_outputs[1:]  # add self attentions if we output attention weights
 
         # first residual connection
-        hidden_states = attention_output + hidden_states.to(attention_output.device)
+        hidden_states = lf.add2(attention_output, hidden_states.to(attention_output.device)) # <----------- LXT
 
         # in ViLT, layernorm is also applied after self-attention
         layer_output = self.layernorm_after(hidden_states)
@@ -576,7 +606,7 @@ class ViltModel(ViltPreTrainedModel):
         self.embeddings = ViltEmbeddings(config)
         self.encoder = ViltEncoder(config)
 
-        self.layernorm = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
+        self.layernorm = lm.LayerNormEpsilon(config.hidden_size, eps=config.layer_norm_eps) # <----------- LXT
         self.pooler = ViltPooler(config) if add_pooling_layer else None
 
         # Initialize weights and apply final processing
@@ -878,7 +908,7 @@ class ViltPredictionHeadTransform(nn.Module):
             self.transform_act_fn = ACT2FN[config.hidden_act]
         else:
             self.transform_act_fn = config.hidden_act
-        self.LayerNorm = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
+        self.LayerNorm = lm.LayerNormEpsilon(config.hidden_size, eps=config.layer_norm_eps) # <----------- LXT
 
     def forward(self, hidden_states):
         hidden_states = self.dense(hidden_states)
@@ -925,8 +955,8 @@ class ViltForQuestionAnswering(ViltPreTrainedModel):
         # Classifier head
         self.classifier = nn.Sequential(
             nn.Linear(config.hidden_size, config.hidden_size * 2),
-            nn.LayerNorm(config.hidden_size * 2),
-            nn.GELU(),
+            lm.LayerNormEpsilon(config.hidden_size * 2), # <----------- LXT
+            GeLU(), # <----------- LXT
             nn.Linear(config.hidden_size * 2, config.num_labels),
         )
 
@@ -1136,8 +1166,8 @@ class ViltForImagesAndTextClassification(ViltPreTrainedModel):
         num_images = config.num_images
         self.classifier = nn.Sequential(
             nn.Linear(config.hidden_size * num_images, config.hidden_size * num_images),
-            nn.LayerNorm(config.hidden_size * num_images),
-            nn.GELU(),
+            lm.LayerNormEpsilon(config.hidden_size * num_images), # <----------- LXT
+            GeLU(), # <----------- LXT
             nn.Linear(config.hidden_size * num_images, config.num_labels),
         )
 
