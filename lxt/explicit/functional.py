@@ -276,7 +276,8 @@ def _layer_norm_slower(hidden_states, weight, bias, variance_epsilon):
     # mul2 is identity if the second input does not require gradients
     y = mul2(y, 1/std)
     y = mul2(y, weight)
-    y = add2(y, bias)
+    if bias is not None:
+        y = add2(y, bias)
 
     return y
 
