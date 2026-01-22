@@ -469,12 +469,16 @@ class matmul_fn(Function):
     def backward(ctx, *out_relevance):
 
         input_a, input_b, outputs = ctx.saved_tensors
+        if input_a.requires_grad and input_b.requires_grad:
+            n_required = 2
+        else: 
+            n_required = 1
         inplace, epsilon = ctx.inplace, ctx.epsilon
 
         if inplace:
-            relevance_norm = out_relevance[0].div_(_stabilize(outputs.mul_(2), epsilon, inplace))
+            relevance_norm = out_relevance[0].div_(_stabilize(outputs.mul_(n_required), epsilon, inplace))
         else:
-            relevance_norm = out_relevance[0] / _stabilize(outputs * 2, epsilon, inplace)
+            relevance_norm = out_relevance[0] / _stabilize(outputs * n_required, epsilon, inplace)
 
         relevance_a = torch.matmul(relevance_norm, input_b.transpose(-1, -2)).mul_(input_a) if input_a.requires_grad else None
         relevance_b = torch.matmul(input_a.transpose(-1, -2), relevance_norm).mul_(input_b) if input_b.requires_grad else None
