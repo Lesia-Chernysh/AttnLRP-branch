@@ -248,7 +248,7 @@ class ViltEmbeddings(nn.Module):
         embeddings = torch.cat([text_embeds, image_embeds], dim=1)
         masks = torch.cat([attention_mask, image_masks], dim=1)
 
-        return embeddings, masks
+        return embeddings, masks, patch_index
 
 
 class TextEmbeddings(nn.Module):
@@ -708,7 +708,7 @@ class ViltModel(ViltPreTrainedModel):
         # and head_mask is converted to shape [num_hidden_layers x batch x num_heads x seq_length x seq_length]
         head_mask = self.get_head_mask(head_mask, self.config.num_hidden_layers)
 
-        embedding_output, attention_mask = self.embeddings(
+        embedding_output, attention_mask, patch_index = self.embeddings(
             input_ids,
             attention_mask,
             token_type_ids,
@@ -1002,7 +1002,7 @@ class ViltForQuestionAnswering(ViltPreTrainedModel):
         >>> processor = ViltProcessor.from_pretrained("dandelin/vilt-b32-finetuned-vqa")
         >>> model = ViltForQuestionAnswering.from_pretrained("dandelin/vilt-b32-finetuned-vqa")
 
-        >>> # prepare inputs
+        >>> # prepare inputs 
         >>> encoding = processor(image, text, return_tensors="pt")
 
         >>> # forward pass
