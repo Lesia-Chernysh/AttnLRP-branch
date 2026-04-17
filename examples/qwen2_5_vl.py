@@ -48,7 +48,8 @@ for param in model.parameters():
 
 # register explicit rules on the visual backbone (same pattern as notebook usage).
 composite = LayerMapComposite([
-    (torch.nn.Conv3d, z_rules.Gamma(100.0)),
+    (torch.nn.Conv3d, z_rules.Gamma(0.1)),
+    (torch.nn.Linear, z_rules.Gamma(0.1)),
 ])
 composite.register(model.visual)
 
