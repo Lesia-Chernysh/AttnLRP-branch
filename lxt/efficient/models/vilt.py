@@ -1006,8 +1006,8 @@ class ViltForQuestionAnswering(ViltPreTrainedModel):
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
-    ) -> Union[SequenceClassifierOutput, tuple[torch.FloatTensor]]:'''
-        r"""
+    ) -> Union[SequenceClassifierOutput, tuple[torch.FloatTensor]]:
+        """
         image_embeds (`torch.FloatTensor` of shape `(batch_size, num_patches, hidden_size)`, *optional*):
             Optionally, instead of passing `pixel_values`, you can choose to directly pass an embedded representation.
             This is useful if you want more control over how to convert `pixel_values` into patch embeddings.
@@ -1076,7 +1076,7 @@ class ViltForQuestionAnswering(ViltPreTrainedModel):
             logits=logits,
             hidden_states=outputs.hidden_states,
             attentions=outputs.attentions,
-        )
+        )'''
 
 
 @auto_docstring(
