@@ -944,6 +944,7 @@ class ViltMLMHead(nn.Module):
 )
 class ViltForQuestionAnswering(ViltPreTrainedModel):
     def __init__(self, config):
+        print("initialized vilt")
         super().__init__(config)
 
         self.num_labels = config.num_labels
@@ -960,6 +961,36 @@ class ViltForQuestionAnswering(ViltPreTrainedModel):
         # Initialize weights and apply final processing
         self.post_init()
 
+    def forward(
+        self,
+        pixel_values,
+        input_embeds,
+        attention_mask=None,
+        token_type_ids=None,
+        pixel_mask=None,
+        **kwargs
+    ):
+        print("new forward")
+        outputs = self.vilt(
+            inputs_embeds=input_embeds,
+            pixel_values=pixel_values,
+            attention_mask=attention_mask,
+            token_type_ids=token_type_ids,
+            pixel_mask=pixel_mask,
+            **kwargs
+        )
+
+        # ViLT uses the first token representation for classification
+        pooled_output = outputs.last_hidden_state[:, 0]
+
+        logits = self.classifier(pooled_output)
+
+        return logits
+
+
+
+    
+    ''' 
     @auto_docstring
     def forward(
         self,
@@ -975,7 +1006,7 @@ class ViltForQuestionAnswering(ViltPreTrainedModel):
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
-    ) -> Union[SequenceClassifierOutput, tuple[torch.FloatTensor]]:
+    ) -> Union[SequenceClassifierOutput, tuple[torch.FloatTensor]]:'''
         r"""
         image_embeds (`torch.FloatTensor` of shape `(batch_size, num_patches, hidden_size)`, *optional*):
             Optionally, instead of passing `pixel_values`, you can choose to directly pass an embedded representation.
