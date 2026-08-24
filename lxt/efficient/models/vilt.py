@@ -970,7 +970,6 @@ class ViltForQuestionAnswering(ViltPreTrainedModel):
         pixel_mask=None,
         **kwargs
     ):
-        print("new forward")
         outputs = self.vilt(
             inputs_embeds=input_embeds,
             pixel_values=pixel_values,
