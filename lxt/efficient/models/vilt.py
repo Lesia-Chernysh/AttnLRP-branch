@@ -354,6 +354,7 @@ class ViltSelfAttention(nn.Module):
         self.dropout = nn.Dropout(config.attention_probs_dropout_prob)
 
     def forward(self, hidden_states, attention_mask=None, head_mask=None, output_attentions=False):
+        print("hidden states shape", hidden_states.shape)
         batch_size, seq_length, _ = hidden_states.shape
         query_layer = (
             self.query(hidden_states)
