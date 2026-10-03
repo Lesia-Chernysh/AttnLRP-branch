@@ -7,6 +7,7 @@ import lxt.efficient.models.bert as bert
 import lxt.efficient.models.gpt2 as gpt2
 import lxt.efficient.models.vit_torch as vit_torch
 import lxt.efficient.models.vilt as vilt
+import lxt.efficient.models.vit_timm as vit_timm
 
 
 DEFAULT_MAP = {
@@ -19,6 +20,7 @@ DEFAULT_MAP = {
     gpt2.modeling_gpt2: gpt2.attnLRP,
     vit_torch.vision_transformer: vit_torch.cp_LRP,
     vilt.modeling_vilt: vilt.attnLRP,
+    vit_timm.vision_transformer: vit_timm.vit_LRP,
 }
 
 def get_default_map(module):
