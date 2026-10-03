@@ -684,6 +684,7 @@ class ViltModel(ViltPreTrainedModel):
         else:
             raise ValueError("You have to specify either input_ids or inputs_embeds")
 
+        print(f"input shape: {input_shape}")
         text_batch_size, seq_length = input_shape
         device = input_ids.device if input_ids is not None else inputs_embeds.device
 
