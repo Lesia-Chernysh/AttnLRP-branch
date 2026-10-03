@@ -20,7 +20,7 @@ DEFAULT_MAP = {
     gpt2.modeling_gpt2: gpt2.attnLRP,
     vit_torch.vision_transformer: vit_torch.cp_LRP,
     vilt.modeling_vilt: vilt.attnLRP,
-    vit_timm.vision_transformer: vit_timm.vit_LRP,
+    vit_timm.vision_transformer: vit_timm.attnLRP ,
 }
 
 def get_default_map(module):
